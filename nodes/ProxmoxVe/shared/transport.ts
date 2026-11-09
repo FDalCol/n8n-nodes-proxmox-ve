@@ -213,8 +213,11 @@ export class ProxmoxClient {
 		private readonly ctx: ProxmoxContext,
 		readonly credentials: ProxmoxCredentials,
 	) {
-		for (const s of [credentials.tokenSecret, credentials.password]) if (s) this.secrets.push(s);
-		if (credentials.tokenId) this.secrets.push(`${credentials.tokenId}=${credentials.tokenSecret}`);
+		// High-entropy secrets are redacted everywhere. The password is not: Proxmox VE never returns
+		// it, and replacing every occurrence would let a workflow test password guesses by echoing them.
+		// It is redacted from login errors only (see login()).
+		if (credentials.tokenSecret) this.secrets.push(credentials.tokenSecret);
+		if (credentials.tokenId && credentials.tokenSecret) this.secrets.push(`${credentials.tokenId}=${credentials.tokenSecret}`);
 	}
 
 	static async create(ctx: ProxmoxContext): Promise<ProxmoxClient> {
@@ -311,11 +314,14 @@ export class ProxmoxClient {
 	}
 
 	private async login(): Promise<void> {
-		const res = await this.send(
-			'POST',
-			'/access/ticket',
-			{ body: { username: this.credentials.username, password: this.credentials.password } },
-			false,
+		const res = await this.withRedacted([this.credentials.password], async () =>
+			await this.send(
+				'POST',
+				'/access/ticket',
+				{ body: { username: this.credentials.username, password: this.credentials.password } },
+				false,
+			),
+			1,
 		);
 		if (res.statusCode === 401) {
 			throw this.error('Login failed (401): check username (user@realm) and password');
@@ -413,6 +419,23 @@ export class ProxmoxClient {
 		return { statusCode, statusMessage: String(response?.statusMessage ?? ''), text };
 	}
 
+	/**
+	 * Runs `fn` while the given values are treated as secrets, so they are redacted from any
+	 * error raised meanwhile (e.g. guest agent command lines or file contents echoed by the server).
+	 */
+	async withRedacted<T>(values: string[], fn: () => Promise<T>, minLength = 2): Promise<T> {
+		const added = values.filter((v) => typeof v === 'string' && v.length >= minLength);
+		this.secrets.push(...added);
+		try {
+			return await fn();
+		} finally {
+			for (const v of added) {
+				const i = this.secrets.lastIndexOf(v);
+				if (i >= 0) this.secrets.splice(i, 1);
+			}
+		}
+	}
+
 	/** True when the user cancelled the execution (n8n versions that expose the signal). */
 	isCancelled(): boolean {
 		const getSignal = (this.ctx as { getExecutionCancelSignal?: () => AbortSignal | undefined })
@@ -472,5 +495,8 @@ export class ProxmoxClient {
 
 /** Returns true when the value looks like a Proxmox VE task ID (UPID). */
 export function isUpid(value: unknown): value is string {
-	return typeof value === 'string' && /^UPID:[^:\s]+:[0-9A-Fa-f]{8}:[0-9A-Fa-f]{8,}:[0-9A-Fa-f]{8}:[^:\s]*:[^:\s]*:[^:\s]+:$/.test(value);
+	if (typeof value !== 'string' || value.length > 512) return false;
+	const m = /^UPID:([^:\s/\\%]+):[0-9A-Fa-f]{8}:[0-9A-Fa-f]{8,}:[0-9A-Fa-f]{8}:([^:\s/\\%]*):([^:\s/\\%]*):([^:\s/\\%]+):$/.exec(value);
+	// No field may be "." or ".." (the UPID is used as a path segment)
+	return m !== null && m.slice(1).every((field) => field !== '.' && field !== '..');
 }

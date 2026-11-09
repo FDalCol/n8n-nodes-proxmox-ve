@@ -55,11 +55,15 @@ export const guestAgentHandlers: ResourceHandlers = {
 		const body: IDataObject = { command: [command, ...args] };
 		const input = ctx.param<string>('inputData', '');
 		if (input) body['input-data'] = input;
-		const started = await ctx.client.post<IDataObject>(agentPath(ctx, 'exec'), body);
-		const pid = Number(started?.pid);
-		if (!Number.isInteger(pid)) throw ctx.client.error('The guest agent did not return a process ID');
-		if (!ctx.bool('waitForResult', true)) return data({ pid });
-		return data(await waitForExec(ctx, agentPath(ctx, 'exec-status'), pid));
+		// The command line and stdin must never appear in error messages
+		const sensitive = [command, ...args, [command, ...args].join(' '), input];
+		return await ctx.client.withRedacted(sensitive, async () => {
+			const started = await ctx.client.post<IDataObject>(agentPath(ctx, 'exec'), body);
+			const pid = Number(started?.pid);
+			if (!Number.isInteger(pid)) throw ctx.client.error('The guest agent did not return a process ID');
+			if (!ctx.bool('waitForResult', true)) return data({ pid });
+			return data(await waitForExec(ctx, agentPath(ctx, 'exec-status'), pid));
+		});
 	},
 	getExecStatus: async (ctx) => {
 		const pid = ctx.num('pid');
@@ -91,7 +95,9 @@ export const guestAgentHandlers: ResourceHandlers = {
 		if (content.length > FILE_WRITE_MAX) {
 			throw ctx.client.error(`Content too large for the guest agent (max ${FILE_WRITE_MAX} characters after encoding)`);
 		}
-		await ctx.client.post(agentPath(ctx, 'file-write'), { file, content, encode });
+		// The file content must never appear in error messages (also in its base64 form)
+		const sensitive = [content, encode ? Buffer.from(content).toString('base64') : Buffer.from(content, 'base64').toString('utf8')];
+		await ctx.client.withRedacted(sensitive, async () => await ctx.client.post(agentPath(ctx, 'file-write'), { file, content, encode }));
 		return data({ file, bytes: encode ? Buffer.byteLength(content) : Buffer.from(content, 'base64').length, success: true });
 	},
 	fsFreeze: async (ctx) => data({ frozen: unwrap(await ctx.client.post(agentPath(ctx, 'fsfreeze-freeze'))) }),

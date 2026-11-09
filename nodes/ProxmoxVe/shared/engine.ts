@@ -1,6 +1,7 @@
 import type { IDataObject, IExecuteFunctions, INodeExecutionData } from 'n8n-workflow';
 
 import {
+	isSafeKey,
 	redactString,
 	SecurityError,
 	validateNodeName,
@@ -80,6 +81,16 @@ export class OperationContext {
 		}
 	}
 
+	/** Validates an integer option (e.g. a limit) against a range, also when it comes from an expression. */
+	limitOption(source: IDataObject, key: string, min: number, max: number): void {
+		if (source[key] === undefined) return;
+		const n = Number(source[key]);
+		if (!Number.isInteger(n) || n < min || n > max) {
+			throw this.client.error(`"${key}" must be an integer between ${min} and ${max}`);
+		}
+		source[key] = n;
+	}
+
 	locator(name: string): string {
 		const v = this.ef.getNodeParameter(name, this.itemIndex, undefined, { extractValue: true });
 		return v === undefined || v === null ? '' : String(v).trim();
@@ -107,8 +118,8 @@ export class OperationContext {
 		for (const entry of raw.parameter ?? []) {
 			const key = String(entry.name ?? '').trim();
 			if (key === '') continue;
-			if (!PARAM_NAME.test(key)) throw this.client.error(`Invalid parameter name "${key.slice(0, 64)}"`);
-			if (reserved.includes(key) || key in out) {
+			if (!PARAM_NAME.test(key) || !isSafeKey(key)) throw this.client.error(`Invalid parameter name "${key.slice(0, 64)}"`);
+			if (reserved.includes(key) || Object.prototype.hasOwnProperty.call(out, key)) {
 				throw this.client.error(`Parameter "${key}" is set more than once`);
 			}
 			const value = entry.value;

@@ -115,9 +115,11 @@ Example output (*Task Finished*, result *Error*, type `vzdump`):
 
 - HTTPS only (HTTP only when explicitly enabled), never downgraded; redirects are never followed.
 - Request timeout 30 s (30 min for uploads): n8n closes the connection when the server sends nothing for that long, before or after the headers. Responses larger than 32 MiB are aborted and the connection is closed. No timers are left pending. All wait loops are bounded (≤ 24 h) and stop when the execution is cancelled.
-- Token secret, password, ticket and CSRF token are only sent in headers or the login body, never in URLs, and are redacted from outputs and errors (also with `continueOnFail`).
-- Custom API Call rejects absolute URLs, path traversal (also encoded) and paths outside `/api2/json`.
-- Uploads are held in memory while being sent.
+- Token ID/secret, password, ticket and CSRF token are only sent in headers or the login body, never in URLs. Token secret, ticket and CSRF token are redacted from outputs and errors (also with `continueOnFail`); the password is redacted from login errors (Proxmox VE never returns it, and redacting it everywhere would let a workflow test password guesses). Fields named like `password`/`secret` (e.g. cloud-init `cipassword`) and API token values are masked; the Exec command line and File Write content never appear in errors.
+- Every value placed in an API path is validated or percent-encoded; `.`/`..` parts (also encoded, or as `..;`) are rejected. Parameter names `__proto__`, `constructor` and `prototype` are rejected.
+- Custom API Call rejects absolute URLs, path traversal (also double-encoded or overlong UTF-8), `;` and paths outside `/api2/json`.
+- **Upload** keeps the whole file in memory while it is sent; the node enforces no size limit (it is bounded by the memory available to n8n and the free space on the storage). **Download From URL** is performed by the Proxmox VE node itself, not by n8n: it can reach any address the node can reach, and the size is bounded only by the storage; use a checksum.
+- List limits (log lines, journal, cluster log, tasks) have maximums also when set by expressions; the trigger state is bounded in entries and size.
 
 ## Compatibility
 

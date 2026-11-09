@@ -23,7 +23,7 @@ export const storageDescription: INodeProperties[] = [
 		options: [
 			{ name: 'Allocate Volume', value: 'allocateVolume', action: 'Allocate a disk image', description: 'Allocate a new disk image on a storage' },
 			{ name: 'Delete Volume', value: 'deleteVolume', action: 'Delete a volume', description: 'DESTRUCTIVE: permanently deletes a volume (disk image, ISO, template or backup) from the storage. Cannot be undone. Use only on explicit request.' },
-			{ name: 'Download From URL', value: 'downloadFromUrl', action: 'Download an ISO or template from a URL', description: 'Let Proxmox VE download an ISO image, container template or import image from a URL, with optional checksum verification' },
+			{ name: 'Download From URL', value: 'downloadFromUrl', action: 'Download an ISO or template from a URL', description: 'The Proxmox VE node itself downloads an ISO image, container template or import image from the URL (n8n does not fetch it), so it can reach any address the node can reach, including internal networks. The size is limited only by the free space on the storage; use a checksum to verify the file.' },
 			{ name: 'Get Content', value: 'getContent', action: 'Get the content of a storage', description: 'List volumes (images, ISOs, templates, backups) on a storage' },
 			{ name: 'Get Many', value: 'getMany', action: 'Get many storages', description: 'List storages available on a node with usage' },
 			{ name: 'Get RRD Data', value: 'getRrdData', action: 'Get storage RRD statistics', description: 'Read usage statistics of a storage' },
@@ -89,7 +89,7 @@ export const storageDescription: INodeProperties[] = [
 		type: 'string',
 		default: 'data',
 		required: true,
-		description: 'Binary field with the file to upload. The file is held in memory during the upload (timeout 30 minutes).',
+		description: 'Binary field with the file to upload. The whole file is held in memory while it is sent (no size limit is enforced by the node: it is limited by the memory available to n8n and the free space on the storage; timeout 30 minutes).',
 		displayOptions: { show: show(['upload']) },
 	},
 	{
@@ -99,7 +99,7 @@ export const storageDescription: INodeProperties[] = [
 		default: '',
 		required: true,
 		placeholder: 'https://example.com/debian-13.iso',
-		description: 'HTTP(S) URL that Proxmox VE downloads from',
+		description: 'HTTP(S) URL. The Proxmox VE node downloads from it directly, not n8n.',
 		displayOptions: { show: show(['downloadFromUrl']) },
 	},
 	{

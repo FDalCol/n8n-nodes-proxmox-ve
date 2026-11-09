@@ -1,9 +1,16 @@
 import type { IDataObject } from 'n8n-workflow';
 
 import { data, list, task, type OperationContext, type ResourceHandlers } from '../../shared/engine';
-import { apiPath } from '../../shared/security';
+import { apiPath, MAX_LIST_ENTRIES } from '../../shared/security';
 
 const SERVICE = /^[A-Za-z0-9][A-Za-z0-9@._-]*$/;
+const IFACE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+function iface(ctx: OperationContext): string {
+	const name = ctx.str('iface');
+	if (!IFACE.test(name) || name.includes('..')) throw ctx.client.error('Invalid interface name');
+	return name;
+}
 
 function service(ctx: OperationContext): string {
 	const s = ctx.str('service');
@@ -54,9 +61,15 @@ export const nodeHandlers: ResourceHandlers = {
 		task(await ctx.client.post(apiPath`/nodes/${ctx.node()}/apt/update`, ctx.collection('aptOptions'))),
 	getUpdates: async (ctx) => list(await ctx.client.get(apiPath`/nodes/${ctx.node()}/apt/update`)),
 	getPackageVersions: async (ctx) => list(await ctx.client.get(apiPath`/nodes/${ctx.node()}/apt/versions`)),
-	getSyslog: async (ctx) => list(await ctx.client.get(apiPath`/nodes/${ctx.node()}/syslog`, ctx.collection('syslogOptions'))),
+	getSyslog: async (ctx) => {
+		const opts = ctx.collection('syslogOptions');
+		ctx.limitOption(opts, 'limit', 1, MAX_LIST_ENTRIES);
+		ctx.limitOption(opts, 'start', 0, Number.MAX_SAFE_INTEGER);
+		return list(await ctx.client.get(apiPath`/nodes/${ctx.node()}/syslog`, opts));
+	},
 	getJournal: async (ctx) => {
 		const opts = ctx.collection('journalOptions');
+		ctx.limitOption(opts, 'lastentries', 1, MAX_LIST_ENTRIES);
 		if (opts.since === 0) delete opts.since;
 		if (opts.until === 0) delete opts.until;
 		return list(await ctx.client.get(apiPath`/nodes/${ctx.node()}/journal`, opts));
@@ -66,7 +79,7 @@ export const nodeHandlers: ResourceHandlers = {
 		return list(await ctx.client.get(apiPath`/nodes/${ctx.node()}/network`, type ? { type } : {}));
 	},
 	getNetworkInterface: async (ctx) =>
-		data(await ctx.client.get(apiPath`/nodes/${ctx.node()}/network/${ctx.str('iface')}`)),
+		data(await ctx.client.get(apiPath`/nodes/${ctx.node()}/network/${iface(ctx)}`)),
 	getDisks: async (ctx) => {
 		const o = ctx.collection('diskOptions');
 		delete o.healthonly;

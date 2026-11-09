@@ -37,6 +37,11 @@ interface Snapshot {
 
 const now = () => Math.floor(Date.now() / 1000);
 
+/** Maximum length of any string kept in the trigger state. */
+const MAX_STATE_KEY_LENGTH = 256;
+/** Maximum number of nodes tracked by the Updates Available event. */
+const MAX_UPDATE_NODES = 64;
+
 function csvList(value: unknown): string[] {
 	return String(value ?? '')
 		.split(',')
@@ -258,8 +263,8 @@ async function pollGuests(this: IPollFunctions, client: ProxmoxClient, state: Tr
 	const items: IDataObject[] = [];
 	let sample: IDataObject | undefined;
 	for (const r of rows) {
-		const id = String(r.vmid);
-		const status = effectiveGuestStatus(r, qmp);
+		const id = String(r.vmid).slice(0, MAX_STATE_KEY_LENGTH);
+		const status = effectiveGuestStatus(r, qmp).slice(0, MAX_STATE_KEY_LENGTH);
 		current[id] = status;
 		if (vmids.length && !vmids.includes(id)) continue;
 		if (type !== 'any' && r.type !== type) continue;
@@ -292,8 +297,8 @@ async function pollNodes(this: IPollFunctions, client: ProxmoxClient, state: Tri
 	const items: IDataObject[] = [];
 	let sample: IDataObject | undefined;
 	for (const r of rows) {
-		const name = String(r.node);
-		const status = String(r.status ?? 'unknown');
+		const name = String(r.node).slice(0, MAX_STATE_KEY_LENGTH);
+		const status = String(r.status ?? 'unknown').slice(0, MAX_STATE_KEY_LENGTH);
 		current[name] = status;
 		if (nodes.length && !nodes.includes(name)) continue;
 		const entry: IDataObject = {
@@ -343,11 +348,11 @@ async function pollTasks(this: IPollFunctions, client: ProxmoxClient, state: Tri
 			endtime: t.endtime,
 		};
 		sample = entry; // most recent matching task
-		if (seen.has(String(t.upid)) || Number(t.endtime) < activatedAt) continue;
+		if (seen.has(String(t.upid).slice(0, MAX_STATE_KEY_LENGTH)) || Number(t.endtime) < activatedAt) continue;
 		items.push(entry);
 	}
 	if (!manual) {
-		for (const t of rows) seen.add(String(t.upid));
+		for (const t of rows) seen.add(String(t.upid).slice(0, MAX_STATE_KEY_LENGTH));
 		state.seenTasks = [...seen].slice(-MAX_STATE_ENTRIES);
 	}
 	return { items: manual ? [] : items, sample };
@@ -409,12 +414,13 @@ async function pollUpdates(this: IPollFunctions, client: ProxmoxClient, state: T
 	const current: Record<string, string[]> = {};
 	const items: IDataObject[] = [];
 	let sample: IDataObject | undefined;
-	for (const node of nodes) {
+	for (const node of nodes.slice(0, MAX_UPDATE_NODES)) {
 		const updates = (await client.get<IDataObject[]>(apiPath`/nodes/${node}/apt/update`)) ?? [];
-		const keys = updates.map((u) => `${String(u.Package)}@${String(u.Version)}`);
+		// Stored keys are bounded in number and in length (trigger state must stay small)
+		const keys = updates.map((u) => `${String(u.Package)}@${String(u.Version)}`.slice(0, MAX_STATE_KEY_LENGTH));
 		current[node] = keys.slice(0, MAX_STATE_ENTRIES);
 		const known = new Set(previous[node] ?? []);
-		const fresh = updates.filter((u) => !known.has(`${String(u.Package)}@${String(u.Version)}`));
+		const fresh = updates.filter((u) => !known.has(`${String(u.Package)}@${String(u.Version)}`.slice(0, MAX_STATE_KEY_LENGTH)));
 		const packages = (list: IDataObject[]) =>
 			list.map((u) => ({ package: u.Package, oldVersion: u.OldVersion, version: u.Version, priority: u.Priority, origin: u.Origin }));
 		const entry: IDataObject = {

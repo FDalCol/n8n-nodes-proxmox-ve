@@ -1,7 +1,7 @@
 import type { IDataObject } from 'n8n-workflow';
 
 import { data, list, type OperationContext, type ResourceHandlers } from '../../shared/engine';
-import { apiPath, validateNodeName, validateVmid } from '../../shared/security';
+import { apiPath, MAX_LIST_ENTRIES, validateNodeName, validateVmid } from '../../shared/security';
 import { getTaskStatus, isTaskSuccessful, parseUpid, validateWaitOptions, waitForTask } from '../../shared/tasks';
 
 const MAX_TASKS = 1000;
@@ -89,6 +89,8 @@ export const taskHandlers: ResourceHandlers = {
 	getLog: async (ctx) => {
 		const t = upid(ctx);
 		const o = ctx.collection('logOptions');
+		ctx.limitOption(o, 'limit', 1, MAX_LIST_ENTRIES);
+		ctx.limitOption(o, 'start', 0, Number.MAX_SAFE_INTEGER);
 		return list(await ctx.client.get(apiPath`/nodes/${t.node}/tasks/${t.upid}/log`, o));
 	},
 	stop: async (ctx) => {

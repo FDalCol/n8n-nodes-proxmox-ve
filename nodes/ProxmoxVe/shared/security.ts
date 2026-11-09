@@ -19,6 +19,8 @@ export const MAX_WAIT_SECONDS = 24 * 60 * 60;
 export const MIN_POLL_INTERVAL_SECONDS = 1;
 /** Maximum number of items kept in trigger state. */
 export const MAX_STATE_ENTRIES = 5000;
+/** Maximum number of entries requested from list endpoints (log lines, journal, cluster log). */
+export const MAX_LIST_ENTRIES = 10_000;
 
 export class SecurityError extends Error {
 	constructor(message: string) {
@@ -85,7 +87,42 @@ export function hasControlChars(value: string): boolean {
 	return false;
 }
 
-const SAFE_PATH = /^[A-Za-z0-9\-._~:@!$&'()*+,;=%/]*$/;
+// ';' is not allowed: it is never needed by the API and enables "..;" tricks on some proxies.
+const SAFE_PATH = /^[A-Za-z0-9\-._~:@!$&'()*+,=%/]*$/;
+
+/** Names that must never be used as parameter or object keys (prototype pollution). */
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** True for a safe parameter name: not empty, not __proto__/constructor/prototype. */
+export function isSafeKey(key: string): boolean {
+	return key !== '' && !FORBIDDEN_KEYS.has(key.toLowerCase());
+}
+
+/**
+ * True when a value, read as a path, contains a "." or ".." segment (also "..;x"), either
+ * literally or after one round of percent-decoding ("%2e%2e", "%2F" ...).
+ */
+export function hasTraversal(value: string): boolean {
+	const variants = [value];
+	try {
+		variants.push(decodeURIComponent(value));
+	} catch {
+		// not valid percent-encoding: only the raw value can be interpreted
+	}
+	return variants.some((v) => v.split(/[/\\]/).some((part) => /^\.\.?(;.*)?$/.test(part)));
+}
+
+/**
+ * Percent-escapes allowed in Custom API Call paths: printable ASCII only, never ".", "/", "\",
+ * "%" (double encoding) or ";". Bytes >= 0x80 (e.g. overlong UTF-8 "%c0%ae") are rejected.
+ */
+function hasForbiddenEscape(path: string): boolean {
+	for (const m of path.matchAll(/%([0-9a-f]{2})/gi)) {
+		const code = parseInt(m[1], 16);
+		if (code < 0x20 || code >= 0x7f || [0x25, 0x2e, 0x2f, 0x3b, 0x5c].includes(code)) return true;
+	}
+	return /%(?![0-9a-f]{2})/i.test(path);
+}
 
 /**
  * Validates a user supplied API path (Custom API Call).
@@ -107,8 +144,8 @@ export function validateApiPath(raw: unknown): string {
 		throw new SecurityError('Path must not contain a query string or fragment, use Query Parameters');
 	}
 	if (!SAFE_PATH.test(path)) throw new SecurityError('Path contains forbidden characters');
-	// Reject percent-encodings of '.', '/', '\' and '%' (also double encoded) and malformed escapes
-	if (/%(2e|2f|5c|25|00)/i.test(path) || /%(?![0-9a-f]{2})/i.test(path)) {
+	// Reject encoded '.', '/', '\', '%' (double encoding), ';', non-ASCII bytes (overlong UTF-8) and malformed escapes
+	if (hasForbiddenEscape(path)) {
 		throw new SecurityError('Encoded path separators or traversal sequences are not allowed');
 	}
 	if (!path.startsWith('/')) path = `/${path}`;
@@ -118,7 +155,7 @@ export function validateApiPath(raw: unknown): string {
 	const segments = path.split('/');
 	// Encoded dots and slashes are rejected above, so a literal check is sufficient here
 	for (const seg of segments) {
-		if (seg === '.' || seg === '..') {
+		if (/^\.\.?(;.*)?$/.test(seg)) {
 			throw new SecurityError('Path traversal is not allowed');
 		}
 	}
@@ -128,12 +165,13 @@ export function validateApiPath(raw: unknown): string {
 
 /**
  * Encodes a single path segment value (node name, VMID, volume ID, UPID ...).
- * Rejects empty values and "." / "..".
+ * Rejects empty values and anything that contains a "." / ".." path part, literally or
+ * percent-encoded ("pve/../..", "%2e%2e", "..;", "100/../../access").
  */
 export function encodeSegment(value: unknown, label = 'value'): string {
 	const str = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
 	if (str === '') throw new SecurityError(`${label} is required`);
-	if (str === '.' || str === '..') throw new SecurityError(`${label} is not valid`);
+	if (hasTraversal(str)) throw new SecurityError(`${label} is not valid`);
 	if (hasControlChars(str)) throw new SecurityError(`${label} contains control characters`);
 	return encodeURIComponent(str);
 }
@@ -177,13 +215,14 @@ export function validateStorageId(value: unknown): string {
 
 export const REDACTED = '[REDACTED]';
 
+// Every pattern is bounded so that redaction stays linear on large untrusted text (no ReDoS).
 const SECRET_PATTERNS: RegExp[] = [
-	/PVEAPIToken\s*[=:]\s*[^\s"',;]+/gi,
-	/PVEAuthCookie\s*[=:]\s*[^\s"',;]+/gi,
-	/CSRFPreventionToken["']?\s*[=:]\s*["']?[^\s"',;}]+/gi,
-	/PVE:[^\s"',;]*::[A-Za-z0-9+/=]{20,}/g, // ticket format
-	/("?(?:password|cipassword|ticket|secret|token-secret|tokensecret)"?\s*[:=]\s*)("[^"]*"|[^\s,;&}]+)/gi,
-	/(Authorization\s*[:=]\s*)[^\r\n,;"]+/gi,
+	/PVEAPIToken\s{0,8}[=:]\s{0,8}[^\s"',;]{1,512}/gi,
+	/PVEAuthCookie\s{0,8}[=:]\s{0,8}[^\s"',;]{1,1024}/gi,
+	/CSRFPreventionToken["']?\s{0,8}[=:]\s{0,8}["']?[^\s"',;}]{1,512}/gi,
+	/PVE:[^\s"',;:]{1,256}:[0-9A-Fa-f]{8}::[A-Za-z0-9+/=]{20,2048}/g, // ticket: PVE:user@realm:TIME::signature
+	/("?(?:password|cipassword|ticket|secret|token-secret|tokensecret)"?\s{0,8}[:=]\s{0,8})("[^"\n]{0,1024}"|[^\s,;&}"]{1,1024})/gi,
+	/(Authorization\s{0,8}[:=]\s{0,8})[^\r\n,;"]{1,1024}/gi,
 ];
 
 /**
@@ -193,7 +232,7 @@ const SECRET_PATTERNS: RegExp[] = [
 export function redactString(text: string, secrets: readonly string[] = []): string {
 	let out = text;
 	for (const secret of secrets) {
-		if (!secret || secret.length < 4) continue;
+		if (!secret) continue;
 		const variants = new Set([secret, encodeURIComponent(secret)]);
 		for (const v of variants) out = out.split(v).join(REDACTED);
 	}
@@ -217,15 +256,28 @@ const SECRET_KEYS = new Set([
 	'cookie',
 ]);
 
+/** Keys whose values are secrets (exact names, plus anything containing "password" or "secret"). */
+function isSecretKey(key: string): boolean {
+	const k = key.toLowerCase();
+	return SECRET_KEYS.has(k) || k.includes('password') || k.includes('secret');
+}
+
 /** Deep copy of a value with secret keys removed and secret values redacted. */
 export function redactValue<T>(value: T, secrets: readonly string[] = [], depth = 0): T {
-	if (depth > 32) return value;
+	// Deeper structures are not returned unchecked: they are replaced
+	if (depth > 32) return (value !== null && typeof value === 'object' ? '[TRUNCATED]' : redactValue(value, secrets, 0)) as T;
 	if (typeof value === 'string') return redactString(value, secrets) as unknown as T;
 	if (Array.isArray(value)) return value.map((v) => redactValue(v, secrets, depth + 1)) as unknown as T;
 	if (value && typeof value === 'object' && !Buffer.isBuffer(value)) {
 		const out: Record<string, unknown> = {};
-		for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-			if (SECRET_KEYS.has(k.toLowerCase()) && v !== null && v !== undefined && v !== '') {
+		const entries = Object.entries(value as Record<string, unknown>);
+		// Key/value lists such as cloud-init settings: [{ key: 'cipassword', value: '...', pending: '...' }]
+		const keyField = (value as Record<string, unknown>).key;
+		const sensitivePair = typeof keyField === 'string' && isSecretKey(keyField);
+		for (const [k, v] of entries) {
+			if (k === '__proto__') continue; // never copy a prototype from untrusted data
+			const hide = isSecretKey(k) || (sensitivePair && (k === 'value' || k === 'pending'));
+			if (hide && v !== null && v !== undefined && v !== '') {
 				out[k] = REDACTED;
 			} else {
 				out[k] = redactValue(v, secrets, depth + 1);
