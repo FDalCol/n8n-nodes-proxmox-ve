@@ -16,8 +16,8 @@ Requires **n8n 2.45.0 or later**.
 
 ```bash
 npm pack                                   # or download the .tgz from npm
-docker cp n8n-nodes-proxmox-ve-0.1.0.tgz n8n:/tmp/
-docker exec -it n8n sh -c "mkdir -p ~/.n8n/nodes && cd ~/.n8n/nodes && npm install --legacy-peer-deps /tmp/n8n-nodes-proxmox-ve-0.1.0.tgz"
+docker cp n8n-nodes-proxmox-ve-0.2.0.tgz n8n:/tmp/
+docker exec -it n8n sh -c "mkdir -p ~/.n8n/nodes && cd ~/.n8n/nodes && npm install --legacy-peer-deps /tmp/n8n-nodes-proxmox-ve-0.2.0.tgz"
 docker restart n8n
 ```
 

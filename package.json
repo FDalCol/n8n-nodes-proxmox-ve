@@ -1,6 +1,6 @@
 {
 	"name": "n8n-nodes-proxmox-ve",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "n8n community nodes for Proxmox VE: nodes, VMs, containers, guest agent, storage, backups, cluster, firewall, tasks and a polling trigger.",
 	"license": "MIT",
 	"homepage": "https://github.com/FDalCol/n8n-nodes-proxmox-ve#readme",
