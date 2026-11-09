@@ -43,6 +43,7 @@
 	},
 	"files": [
 		"dist",
+		"!dist/**/*.tsbuildinfo",
 		"index.js"
 	],
 	"n8n": {
@@ -57,12 +58,13 @@
 		]
 	},
 	"devDependencies": {
+		"@n8n/backend-network": "1.20.6",
 		"@n8n/node-cli": "0.55.6",
 		"@types/node": "26.6.6",
-		"axios": "1.21.0",
 		"eslint": "9.39.4",
 		"n8n-workflow": "2.16.0",
 		"prettier": "3.8.3",
+		"selfsigned": "5.5.0",
 		"typescript": "5.9.3",
 		"vitest": "5.1.0"
 	},
