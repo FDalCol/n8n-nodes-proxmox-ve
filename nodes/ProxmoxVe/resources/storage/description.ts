@@ -89,7 +89,7 @@ export const storageDescription: INodeProperties[] = [
 		type: 'string',
 		default: 'data',
 		required: true,
-		description: 'Binary field with the file to upload. The whole file is held in memory while it is sent (no size limit is enforced by the node: it is limited by the memory available to n8n and the free space on the storage; timeout 30 minutes).',
+		description: 'Binary field with the file to upload. The file is streamed from the n8n binary data, not copied in memory. No size limit is enforced by the node: it is limited by the free space on the storage (timeout 30 minutes).',
 		displayOptions: { show: show(['upload']) },
 	},
 	{

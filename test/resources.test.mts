@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { FakeProxmox, makeUpid } from './helpers/fakeProxmox';
-import { runNode, runNodeJson, sentRequests, tokenCredentials, type Params } from './helpers/harness';
+import { binaryAccess, runNode, runNodeJson, sentRequests, tokenCredentials, type Params } from './helpers/harness';
 
 let server: FakeProxmox;
 const creds = () => tokenCredentials(server);
@@ -317,6 +317,42 @@ describe('Storage', () => {
 		expect(req.body).toContain('filename="test.iso"');
 		expect(req.body).toContain('ISO-CONTENT-ISO-CONTENT');
 		expect(req.body).toContain('name="checksum"');
+		expect(Number(req.headers['content-length'])).toBe(Buffer.byteLength(req.body));
+	});
+
+	it('streams uploads from the binary data store without loading the file into memory', async () => {
+		const upid = makeUpid('pve1', 'imgcopy');
+		server.on('POST', '/nodes/{node}/storage/{storage}/upload', () => ({ data: upid }));
+		const iso = Buffer.from('BIG-ISO-CHUNK-'.repeat(150_000)); // ~2 MiB, several stream chunks
+		binaryAccess.bufferLoads = 0;
+		binaryAccess.streams = 0;
+		const [out] = await run(
+			{ resource: 'storage', operation: 'upload', node: 'pve1', storage: 'local', uploadContent: 'iso', binaryPropertyName: 'data' },
+			{ binary: { data: { data: iso, fileName: 'big.iso', id: 'filesystem-v2:workflows/1/executions/1/binary_data/abc' } } },
+		);
+		expect(out).toMatchObject({ upid, filename: 'big.iso', size: iso.length });
+		expect(binaryAccess.streams).toBe(1);
+		expect(binaryAccess.bufferLoads).toBe(0);
+		const req = server.requestsTo('POST', '/nodes/pve1/storage/local/upload')[0];
+		expect(Number(req.headers['content-length'])).toBe(Buffer.byteLength(req.body));
+		const start = req.body.indexOf('BIG-ISO-CHUNK-');
+		expect(req.body.slice(start, start + iso.length)).toBe(iso.toString());
+		expect(req.body).toContain('filename="big.iso"');
+	});
+
+	it('File Write checks the binary size before loading the file', async () => {
+		server.requests.length = 0;
+		binaryAccess.bufferLoads = 0;
+		binaryAccess.streams = 0;
+		const tooBig = Buffer.alloc(46_081, 'a');
+		for (const binary of [{ data: tooBig, fileName: 'x.bin', id: 'filesystem-v2:big' }, { data: tooBig, fileName: 'x.bin' }]) {
+			await expect(
+				runNode({ credentials: creds(), params: { resource: 'guestAgent', operation: 'fileWrite', node: 'pve1', vmid: '100', file: '/tmp/x', contentSource: 'binary', binaryPropertyName: 'data' }, binary: { data: binary } }),
+			).rejects.toThrow(/File too large for the guest agent \(46081 bytes, max 46080 bytes\)/);
+		}
+		expect(binaryAccess.bufferLoads).toBe(0);
+		expect(binaryAccess.streams).toBe(0);
+		expect(server.requests).toHaveLength(0);
 	});
 
 	it('downloads from URL and deletes volumes with encoded volume IDs', async () => {

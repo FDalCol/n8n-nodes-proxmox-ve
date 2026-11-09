@@ -1,5 +1,6 @@
 import type { IDataObject } from 'n8n-workflow';
 
+import { streamedBinaryFile } from '../../shared/binary';
 import { data, list, task, type OperationContext, type ResourceHandlers } from '../../shared/engine';
 import { apiPath, UPLOAD_TIMEOUT_MS, validateVmid } from '../../shared/security';
 
@@ -67,16 +68,17 @@ export const storageHandlers: ResourceHandlers = {
 		} catch (error) {
 			throw ctx.client.error((error as Error).message);
 		}
-		const buffer = await ctx.ef.helpers.getBinaryDataBuffer(ctx.itemIndex, prop);
+		// The file is streamed from the n8n binary data: no second copy is held in memory
+		const { file, size } = await streamedBinaryFile(ctx, binary, prop, filename);
 		const form = new FormData();
 		form.append('content', content);
 		for (const [k, v] of Object.entries(checksum)) form.append(k, String(v));
-		form.append('filename', new Blob([new Uint8Array(buffer)], { type: 'application/octet-stream' }), filename);
+		form.append('filename', file);
 		const upid = await ctx.client.request('POST', apiPath`/nodes/${node}/storage/${storage}/upload`, {
 			formData: form,
 			timeoutMs: UPLOAD_TIMEOUT_MS,
 		});
-		return task(upid, { storage, filename, content, size: buffer.length });
+		return task(upid, { storage, filename, content, size });
 	},
 	downloadFromUrl: async (ctx) => {
 		const node = ctx.node();

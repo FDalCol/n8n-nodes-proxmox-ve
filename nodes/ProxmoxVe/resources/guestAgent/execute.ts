@@ -1,10 +1,13 @@
 import type { IDataObject } from 'n8n-workflow';
 
+import { binarySize } from '../../shared/binary';
 import { data, list, type OperationContext, type ResourceHandlers } from '../../shared/engine';
 import { apiPath, hasControlChars, MAX_POLL_ITERATIONS } from '../../shared/security';
 import { validateWaitOptions } from '../../shared/tasks';
 
 const FILE_WRITE_MAX = 61440;
+/** Largest binary whose base64 encoding fits into FILE_WRITE_MAX characters. */
+const FILE_WRITE_MAX_BYTES = (FILE_WRITE_MAX / 4) * 3;
 
 function agentPath(ctx: OperationContext, command: string): string {
 	return `${apiPath`/nodes/${ctx.node()}/qemu/${ctx.vmid()}`}/agent/${command}`;
@@ -84,7 +87,12 @@ export const guestAgentHandlers: ResourceHandlers = {
 		let encode: boolean;
 		if (ctx.str('contentSource') === 'binary') {
 			const prop = ctx.str('binaryPropertyName');
-			ctx.ef.helpers.assertBinaryData(ctx.itemIndex, prop);
+			const binary = ctx.ef.helpers.assertBinaryData(ctx.itemIndex, prop);
+			// Check the size before loading the file (base64 of FILE_WRITE_MAX_BYTES = FILE_WRITE_MAX chars)
+			const size = await binarySize(ctx, binary);
+			if (size > FILE_WRITE_MAX_BYTES) {
+				throw ctx.client.error(`File too large for the guest agent (${size} bytes, max ${FILE_WRITE_MAX_BYTES} bytes)`);
+			}
 			const buffer = await ctx.ef.helpers.getBinaryDataBuffer(ctx.itemIndex, prop);
 			content = buffer.toString('base64');
 			encode = false; // already base64

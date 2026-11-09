@@ -5,6 +5,7 @@
  */
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
 import {
 	NodeApiError,
@@ -56,6 +57,9 @@ const credentialType = new ProxmoxVeApi();
 
 export const sentRequests: IHttpRequestOptions[] = [];
 
+/** How the node accessed binary data (to check that uploads are streamed). */
+export const binaryAccess = { bufferLoads: 0, streams: 0 };
+
 /** Same flow as n8n-core: authenticate() then the outbound request; errors wrapped in NodeApiError. */
 async function httpRequestWithAuthentication(
 	node: INode,
@@ -97,7 +101,8 @@ export interface RunOptions {
 	params: Params | Params[];
 	items?: INodeExecutionData[];
 	continueOnFail?: boolean;
-	binary?: Record<string, { data: Buffer; fileName: string; mimeType?: string }>;
+	/** Binary properties; with `id` they behave like n8n's filesystem/S3 binary data mode. */
+	binary?: Record<string, { data: Buffer; fileName: string; mimeType?: string; id?: string }>;
 	/** Simulates the execution cancel signal of n8n. */
 	cancelSignal?: AbortSignal;
 }
@@ -121,12 +126,31 @@ export function executeContext(opts: RunOptions) {
 			assertBinaryData: (_i: number, prop: string) => {
 				const b = opts.binary?.[prop];
 				if (!b) throw new Error(`No binary data property "${prop}"`);
+				// In filesystem/S3 mode n8n keeps only a reference in the item, not the data
+				if (b.id) return { id: b.id, data: 'filesystem-v2', fileName: b.fileName, mimeType: b.mimeType ?? 'application/octet-stream' };
 				return { data: b.data.toString('base64'), fileName: b.fileName, mimeType: b.mimeType ?? 'application/octet-stream' };
 			},
 			getBinaryDataBuffer: async (_i: number, prop: string) => {
 				const b = opts.binary?.[prop];
 				if (!b) throw new Error(`No binary data property "${prop}"`);
+				binaryAccess.bufferLoads++;
 				return b.data;
+			},
+			getBinaryMetadata: async (id: string) => {
+				const b = Object.values(opts.binary ?? {}).find((x) => x.id === id);
+				if (!b) throw new Error(`Unknown binary id ${id}`);
+				return { fileName: b.fileName, mimeType: b.mimeType, fileSize: b.data.length };
+			},
+			getBinaryStream: async (id: string) => {
+				const b = Object.values(opts.binary ?? {}).find((x) => x.id === id);
+				if (!b) throw new Error(`Unknown binary id ${id}`);
+				binaryAccess.streams++;
+				const chunkSize = 64 * 1024;
+				return Readable.from(
+					(function* () {
+						for (let i = 0; i < b.data.length; i += chunkSize) yield b.data.subarray(i, i + chunkSize);
+					})(),
+				);
 			},
 		},
 	};
