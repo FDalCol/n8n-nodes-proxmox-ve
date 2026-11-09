@@ -186,11 +186,11 @@ export function guestDescription(kind: GuestKind, resource: string): INodeProper
 	props.push(
 		additionalParameters(
 			show(['create']),
-			'Any other parameter of the create endpoint (validated against the Proxmox VE API), e.g. ide2, boot, agent, net1',
+			'Any other parameter of the create endpoint, e.g. ide2, boot, agent, net1. Unknown names are rejected by Proxmox VE.',
 		),
 		additionalParameters(
 			show(['updateConfig']),
-			'Configuration options to set (validated against the Proxmox VE API), e.g. memory=4096, cores=4, net0=...',
+			'Configuration options to set, e.g. memory=4096, cores=4, net0=... Unknown names are rejected by Proxmox VE.',
 		),
 		{
 			displayName: 'Update Fields',
@@ -529,8 +529,6 @@ export function guestHandlers(kind: GuestKind): ResourceHandlers {
 		const opts = pick(ctx.collection('powerOptions'), POWER_KEYS[kind][op] ?? []);
 		return task(await ctx.client.post(`${base(ctx)}/status/${path}`, opts));
 	};
-	const createKey = kind === 'qemu' ? 'POST /nodes/{node}/qemu' : 'POST /nodes/{node}/lxc';
-	const configKey = kind === 'qemu' ? 'POST /nodes/{node}/qemu/{vmid}/config' : 'PUT /nodes/{node}/lxc/{vmid}/config';
 
 	const handlers: ResourceHandlers = {
 		getMany: async (ctx) => {
@@ -559,12 +557,12 @@ export function guestHandlers(kind: GuestKind): ResourceHandlers {
 			const fields = ctx.collection('createFields');
 			const body: IDataObject = { vmid, ...fields };
 			if (kind === 'lxc') body.ostemplate = ctx.str('ostemplate');
-			Object.assign(body, ctx.additional(createKey, 'additionalParameters', Object.keys(body)));
+			Object.assign(body, ctx.additional('additionalParameters', Object.keys(body)));
 			return task(await ctx.client.post(apiPath`/nodes/${node}/${kind}`, body), { vmid, node });
 		},
 		updateConfig: async (ctx) => {
 			const body: IDataObject = {
-				...ctx.additional(configKey),
+				...ctx.additional(),
 				...pick(ctx.collection('updateOptions'), ['delete', 'digest']),
 			};
 			if (Object.keys(body).length === 0) throw ctx.client.error('Nothing to update: add at least one parameter');

@@ -1,6 +1,5 @@
 import type { IDataObject, IExecuteFunctions, INodeExecutionData } from 'n8n-workflow';
 
-import writeParams from '../generated/writeParams.json';
 import {
 	redactString,
 	SecurityError,
@@ -26,14 +25,8 @@ export const data = (value: unknown): OperationResult => ({ kind: 'data', data: 
 export const list = (value: unknown): OperationResult => ({ kind: 'list', data: value });
 export const task = (upid: unknown, extra?: IDataObject): OperationResult => ({ kind: 'task', upid, extra });
 
-interface ParamSpec {
-	n: string;
-	t: string;
-	r: number;
-	e?: string[];
-}
-
-const WRITE_PARAMS = writeParams as Record<string, ParamSpec[]>;
+/** Proxmox VE parameter names: letters, digits, "-" and "_", e.g. memory, net0, prune-backups. */
+const PARAM_NAME = /^[a-z][a-z0-9_-]{0,63}$/i;
 
 /** Per item context with typed parameter accessors. */
 export class OperationContext {
@@ -105,32 +98,20 @@ export class OperationContext {
 	}
 
 	/**
-	 * Reads an "Additional Parameters" fixed collection and validates the names against the
-	 * parameters of the given endpoint in the Proxmox VE API specification.
+	 * Reads an "Additional Parameters" fixed collection. Names must look like Proxmox VE
+	 * parameter names; unknown names are rejected by Proxmox VE with a clear error.
 	 */
-	additional(endpointKey: string, name = 'additionalParameters', reserved: string[] = []): IDataObject {
+	additional(name = 'additionalParameters', reserved: string[] = []): IDataObject {
 		const raw = this.param<{ parameter?: Array<{ name?: string; value?: unknown }> }>(name, {}) ?? {};
-		const spec = WRITE_PARAMS[endpointKey] ?? [];
 		const out: IDataObject = {};
 		for (const entry of raw.parameter ?? []) {
 			const key = String(entry.name ?? '').trim();
 			if (key === '') continue;
-			const match = spec.find((p) =>
-				p.n.includes('[n]') ? new RegExp(`^${p.n.replace('[n]', '\\d+')}$`).test(key) : p.n === key,
-			);
-			if (!match) {
-				throw this.client.error(
-					`Unknown parameter "${key}"`,
-					`The Proxmox VE API (${endpointKey}) does not define this parameter.`,
-				);
-			}
+			if (!PARAM_NAME.test(key)) throw this.client.error(`Invalid parameter name "${key.slice(0, 64)}"`);
 			if (reserved.includes(key) || key in out) {
 				throw this.client.error(`Parameter "${key}" is set more than once`);
 			}
 			const value = entry.value;
-			if (match.e && !match.e.includes(String(value))) {
-				throw this.client.error(`Invalid value for "${key}"`, `Allowed values: ${match.e.join(', ')}`);
-			}
 			out[key] = typeof value === 'string' ? value : value === undefined || value === null ? '' : String(value);
 		}
 		return out;

@@ -9,18 +9,16 @@ import {
 
 import { accessDescription } from './resources/access/description';
 import { accessHandlers } from './resources/access/execute';
-import { apiReadDescription } from './resources/apiRead/description';
-import { apiReadHandlers } from './resources/apiRead/execute';
 import { backupDescription } from './resources/backup/description';
 import { backupHandlers } from './resources/backup/execute';
+import { backupJobDescription } from './resources/backupJob/description';
+import { backupJobHandlers } from './resources/backupJob/execute';
 import { clusterDescription } from './resources/cluster/description';
 import { clusterHandlers } from './resources/cluster/execute';
 import { containerDescription } from './resources/container/description';
 import { containerHandlers } from './resources/container/execute';
 import { customApiCallDescription } from './resources/customApiCall/description';
 import { customApiCallHandlers } from './resources/customApiCall/execute';
-import { firewallDescription } from './resources/firewall/description';
-import { firewallHandlers } from './resources/firewall/execute';
 import { guestAgentDescription } from './resources/guestAgent/description';
 import { guestAgentHandlers } from './resources/guestAgent/execute';
 import { haDescription } from './resources/ha/description';
@@ -48,14 +46,13 @@ const HANDLERS: Record<string, ResourceHandlers> = {
 	guestAgent: guestAgentHandlers,
 	storage: storageHandlers,
 	backup: backupHandlers,
+	backupJob: backupJobHandlers,
 	cluster: clusterHandlers,
 	ha: haHandlers,
 	pool: poolHandlers,
 	replication: replicationHandlers,
-	firewall: firewallHandlers,
 	access: accessHandlers,
 	task: taskHandlers,
-	apiRead: apiReadHandlers,
 	customApiCall: customApiCallHandlers,
 };
 
@@ -67,7 +64,7 @@ export class ProxmoxVe implements INodeType {
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
-		description: 'Manage Proxmox VE nodes, VMs, containers, storage, backups, cluster, firewall and tasks',
+		description: 'Manage Proxmox VE nodes, VMs, containers, storage, backups, cluster and tasks',
 		defaults: {
 			name: 'Proxmox VE',
 		},
@@ -88,12 +85,11 @@ export class ProxmoxVe implements INodeType {
 				noDataExpression: true,
 				options: [
 					{ name: 'Access', value: 'access', description: 'Users, groups, roles, permissions and API tokens (read-only)' },
-					{ name: 'API Read', value: 'apiRead', description: 'Read any GET endpoint of the Proxmox VE API' },
-					{ name: 'Backup', value: 'backup', description: 'Backups, restore, prune and backup jobs' },
+					{ name: 'Backup', value: 'backup', description: 'Create, list, delete and prune backups' },
+					{ name: 'Backup Job', value: 'backupJob', description: 'Read scheduled backup jobs and run them now' },
 					{ name: 'Cluster', value: 'cluster', description: 'Cluster status, resources, tasks, log, options and version' },
 					{ name: 'Container (LXC)', value: 'container', description: 'LXC containers' },
 					{ name: 'Custom API Call', value: 'customApiCall', description: 'Any request to the Proxmox VE API (high risk)' },
-					{ name: 'Firewall', value: 'firewall', description: 'Firewall rules, aliases, IP sets and options at cluster, node, VM and container level' },
 					{ name: 'Guest Agent', value: 'guestAgent', description: 'QEMU guest agent commands inside VMs' },
 					{ name: 'High Availability', value: 'ha', description: 'HA resources, rules (9.x), groups (8.x) and status' },
 					{ name: 'Node', value: 'node', description: 'Cluster nodes, services, updates, logs, network and disks' },
@@ -111,14 +107,13 @@ export class ProxmoxVe implements INodeType {
 			...guestAgentDescription,
 			...storageDescription,
 			...backupDescription,
+			...backupJobDescription,
 			...clusterDescription,
 			...haDescription,
 			...poolDescription,
 			...replicationDescription,
-			...firewallDescription,
 			...accessDescription,
 			...taskDescription,
-			...apiReadDescription,
 			...customApiCallDescription,
 		],
 	};

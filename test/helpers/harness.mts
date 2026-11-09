@@ -115,7 +115,8 @@ export function executeContext(opts: RunOptions) {
 			getParam(paramsFor(i), name, fallback, options),
 		helpers: {
 			httpRequestWithAuthentication: async function (_type: string, o: IHttpRequestOptions) {
-				return await httpRequestWithAuthentication(NODE, opts.credentials, o);
+				// Like n8n-core 2.45: a node-supplied abortSignal is replaced by the execution cancel signal
+				return await httpRequestWithAuthentication(NODE, opts.credentials, { ...o, abortSignal: opts.cancelSignal });
 			},
 			assertBinaryData: (_i: number, prop: string) => {
 				const b = opts.binary?.[prop];

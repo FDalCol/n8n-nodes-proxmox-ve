@@ -132,10 +132,55 @@ describe('limits', () => {
 		await expect(client.get('/nodes/pve1/syslog', {}, { maxBytes: 64 * 1024 })).rejects.toThrow(/too large/i);
 	});
 
-	it('times out slow requests', async () => {
-		const ctx = executeContext({ credentials: tokenCredentials(server), params: {} });
-		const client = await ProxmoxClient.create(ctx as never);
-		await expect(client.get('/nodes/pve1/journal', {}, { timeoutMs: 300 })).rejects.toThrow(/timed out/i);
+	const client = async () => ProxmoxClient.create(executeContext({ credentials: tokenCredentials(server), params: {} }) as never);
+
+	it('times out and closes the connection when the server does not answer', async () => {
+		const started = Date.now();
+		await expect((await client()).get('/nodes/pve1/journal', {}, { timeoutMs: 300 })).rejects.toThrow(/timed out after/i);
+		await new Promise((r) => setTimeout(r, 100));
+		const closed = server.socketClosedAt.get('/nodes/pve1/journal');
+		expect(closed).toBeDefined();
+		expect(closed! - started).toBeLessThan(1000);
+	});
+
+	it('times out and closes the connection when the server stalls after the headers', async () => {
+		server.on('GET', '/stall', () => ({
+			stream: (res) => {
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				res.write('{"data":');
+			},
+		}));
+		const started = Date.now();
+		await expect((await client()).get('/stall', {}, { timeoutMs: 400 })).rejects.toThrow(/timed out after/i);
+		await new Promise((r) => setTimeout(r, 100));
+		expect(server.socketClosedAt.get('/stall')! - started).toBeLessThan(1500);
+	});
+
+	it('closes the connection as soon as the body exceeds the size limit', async () => {
+		server.on('GET', '/endless', () => ({
+			stream: (res) => {
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				const chunk = ' '.repeat(64 * 1024);
+				const timer = setInterval(() => res.write(chunk), 5);
+				res.on('close', () => clearInterval(timer));
+			},
+		}));
+		const started = Date.now();
+		await expect((await client()).get('/endless', {}, { maxBytes: 256 * 1024 })).rejects.toThrow(/too large/i);
+		await new Promise((r) => setTimeout(r, 100));
+		const closed = server.socketClosedAt.get('/endless');
+		expect(closed).toBeDefined();
+		expect(closed! - started).toBeLessThan(2000);
+	});
+
+	it('leaves no pending timers after a request', async () => {
+		const c = await client();
+		await c.get('/nodes');
+		const timers = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
+		const before = timers();
+		await c.get('/nodes');
+		await c.get('/nodes/pve1/status');
+		expect(timers()).toBe(before);
 	});
 });
 

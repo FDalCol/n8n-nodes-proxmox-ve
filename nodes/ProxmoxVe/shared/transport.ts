@@ -124,12 +124,8 @@ export function toQueryParams(params: IDataObject = {}): IDataObject {
 	return out;
 }
 
-interface StreamLike {
-	destroy?: () => void;
-	[Symbol.asyncIterator]?: () => AsyncIterator<unknown>;
-}
-
-async function readBody(body: unknown, maxBytes: number): Promise<string> {
+/** Decodes the (already buffered) response body; the size is checked again as a safety net. */
+function readBody(body: unknown, maxBytes: number): string {
 	if (body === undefined || body === null) return '';
 	if (typeof body === 'string') {
 		if (Buffer.byteLength(body) > maxBytes) throw new SecurityError('Response too large');
@@ -144,29 +140,12 @@ async function readBody(body: unknown, maxBytes: number): Promise<string> {
 		if (buf.length > maxBytes) throw new SecurityError('Response too large');
 		return buf.toString('utf8');
 	}
-	const stream = body as StreamLike;
-	if (typeof stream[Symbol.asyncIterator] === 'function') {
-		const chunks: Buffer[] = [];
-		let total = 0;
-		for await (const chunk of stream as AsyncIterable<unknown>) {
-			const buf = Buffer.isBuffer(chunk)
-				? chunk
-				: typeof chunk === 'string'
-					? Buffer.from(chunk)
-					: Buffer.from(chunk as Uint8Array);
-			total += buf.length;
-			if (total > maxBytes) {
-				stream.destroy?.();
-				throw new SecurityError(
-					`Response too large (more than ${Math.round(maxBytes / 1024 / 1024)} MiB), aborted`,
-				);
-			}
-			chunks.push(buf);
-		}
-		return Buffer.concat(chunks).toString('utf8');
-	}
-	// Already parsed (should not happen with encoding "stream")
+	// Already parsed (should not happen with encoding "arraybuffer")
 	return JSON.stringify(body);
+}
+
+function tooLargeMessage(maxBytes: number): string {
+	return `Response too large (more than ${Math.round(maxBytes / 1024 / 1024)} MiB), aborted`;
 }
 
 function describeNetworkError(error: unknown): { message: string; description?: string } {
@@ -365,18 +344,26 @@ export class ProxmoxClient {
 			headers.Cookie = `PVEAuthCookie=${this.session.ticket}`;
 			if (method !== 'GET') headers.CSRFPreventionToken = this.session.csrf;
 		}
+		const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
+		const maxBytes = opts.maxBytes ?? MAX_RESPONSE_BYTES;
+		// The response is buffered by n8n. This bounds the request without any timer of ours
+		// (n8n 2.45 replaces a node-supplied abortSignal with the execution cancel signal):
+		// - `timeout`: n8n closes the connection when the server sends nothing for timeoutMs,
+		//   before or after the headers (with buffering it stays active until the body is complete);
+		// - `maxResponseBodyBytes`: n8n closes the connection as soon as the body exceeds the limit.
 		const options: IHttpRequestOptions = {
 			method: method as IHttpRequestMethods,
 			url: `${this.credentials.baseUrl}/api2/json${path}`,
 			headers,
-			encoding: 'stream',
+			encoding: 'arraybuffer',
+			maxResponseBodyBytes: maxBytes,
 			json: false,
 			returnFullResponse: true,
 			ignoreHttpStatusErrors: true,
 			disableFollowRedirect: true,
 			sendCredentialsOnCrossOriginRedirect: false,
 			skipSslCertificateValidation: this.credentials.allowSelfSigned,
-			timeout: opts.timeoutMs ?? REQUEST_TIMEOUT_MS,
+			timeout: timeoutMs,
 			arrayFormat: 'repeat',
 		};
 		if (method === 'GET' || method === 'DELETE') {
@@ -391,59 +378,39 @@ export class ProxmoxClient {
 			else headers['Content-Type'] = 'application/x-www-form-urlencoded';
 		}
 
-		const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
-		const maxBytes = opts.maxBytes ?? MAX_RESPONSE_BYTES;
-		let settled = false;
-		let streamRef: StreamLike | undefined;
-
-		const exchange = async (): Promise<RawResponse> => {
-			let response: {
-				body?: unknown;
-				statusCode?: number;
-				statusMessage?: string;
-			};
-			try {
-				response = (await this.ctx.helpers.httpRequestWithAuthentication.call(
-					this.ctx,
-					CREDENTIAL_NAME,
-					options,
-				)) as typeof response;
-			} catch (error) {
-				const { message, description } = describeNetworkError(error);
-				throw this.error(message, description);
-			}
-			streamRef = response?.body as StreamLike;
-			const statusCode = Number(response?.statusCode ?? 0);
-			if (statusCode >= 300 && statusCode < 400) {
-				streamRef?.destroy?.();
-				throw this.error(
-					`The server answered with a redirect (HTTP ${statusCode}). Redirects are never followed.`,
-					'Check that the Base URL points directly to the Proxmox VE API (https://host:8006).',
-				);
-			}
-			let text: string;
-			try {
-				text = await readBody(response?.body, maxBytes);
-			} catch (error) {
-				if (error instanceof SecurityError) throw this.error(error.message);
-				const { message, description } = describeNetworkError(error);
-				throw this.error(message, description);
-			}
-			return { statusCode, statusMessage: String(response?.statusMessage ?? ''), text };
-		};
-
-		// Overall deadline. `sleep` exists in every supported n8n-workflow version (sleepWithAbort
-		// does not); once the request has settled the deadline is ignored.
-		const deadline = sleep(timeoutMs).then(() => {
-			if (settled) return new Promise<never>(() => undefined);
-			streamRef?.destroy?.();
-			throw this.error(`Request to Proxmox VE timed out after ${Math.round(timeoutMs / 1000)} s`);
-		});
+		let response: { body?: unknown; statusCode?: number; statusMessage?: string };
 		try {
-			return await Promise.race([exchange(), deadline]);
-		} finally {
-			settled = true;
+			response = (await this.ctx.helpers.httpRequestWithAuthentication.call(
+				this.ctx,
+				CREDENTIAL_NAME,
+				options,
+			)) as typeof response;
+		} catch (error) {
+			const e = error as { code?: string; message?: string; cause?: { code?: string; message?: string } };
+			const detail = `${e?.code ?? ''} ${e?.cause?.code ?? ''} ${e?.message ?? ''} ${e?.cause?.message ?? ''}`;
+			if (/ERR_RESPONSE_TOO_LARGE|maximum allowed size|maxContentLength/i.test(detail)) {
+				throw this.error(tooLargeMessage(maxBytes));
+			}
+			if (/ECONNABORTED|ETIMEDOUT|timeout of \d+ms exceeded/i.test(detail)) {
+				throw this.error(`Request to Proxmox VE timed out after ${Math.round(timeoutMs / 1000)} s`);
+			}
+			const { message, description } = describeNetworkError(error);
+			throw this.error(message, description);
 		}
+		const statusCode = Number(response?.statusCode ?? 0);
+		if (statusCode >= 300 && statusCode < 400) {
+			throw this.error(
+				`The server answered with a redirect (HTTP ${statusCode}). Redirects are never followed.`,
+				'Check that the Base URL points directly to the Proxmox VE API (https://host:8006).',
+			);
+		}
+		let text: string;
+		try {
+			text = readBody(response?.body, maxBytes);
+		} catch {
+			throw this.error(tooLargeMessage(maxBytes));
+		}
+		return { statusCode, statusMessage: String(response?.statusMessage ?? ''), text };
 	}
 
 	/** True when the user cancelled the execution (n8n versions that expose the signal). */

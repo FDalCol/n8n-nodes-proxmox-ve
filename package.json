@@ -31,8 +31,7 @@
 	},
 	"main": "index.js",
 	"scripts": {
-		"generate:api": "node scripts/generate-api-catalog.mjs",
-		"build": "node scripts/generate-api-catalog.mjs && n8n-node build",
+		"build": "n8n-node build",
 		"build:watch": "tsc --watch",
 		"dev": "n8n-node dev",
 		"lint": "n8n-node lint",

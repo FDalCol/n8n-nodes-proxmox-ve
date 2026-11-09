@@ -1,6 +1,6 @@
 # n8n-nodes-proxmox-ve
 
-n8n community nodes for [Proxmox VE](https://www.proxmox.com/en/proxmox-virtual-environment): manage nodes, VMs, containers, the QEMU guest agent, storage, backups, cluster, HA, pools, replication, firewall and tasks, read any GET endpoint of the API, and start workflows on Proxmox VE events.
+n8n community nodes for [Proxmox VE](https://www.proxmox.com/en/proxmox-virtual-environment): manage nodes, VMs, containers, the QEMU guest agent, storage, backups, cluster, HA, pools, replication and tasks, call any API endpoint, and start workflows on Proxmox VE events.
 
 - **Proxmox VE** node (`usableAsTool`: works as a tool for AI agents)
 - **Proxmox VE Trigger** node (polling)
@@ -42,7 +42,7 @@ Use one **read-only token** for reads and the trigger, and a **separate token** 
 
 ```bash
 pveum user add n8n@pve --comment "n8n automation"
-# read-only (reads, API Read, trigger)
+# read-only (reads and trigger)
 pveum user token add n8n@pve readonly --privsep 1
 pveum acl modify / --tokens 'n8n@pve!readonly' --roles PVEAuditor
 # writes: grant only what the workflows need, on the narrowest path
@@ -52,7 +52,7 @@ pveum acl modify /vms --tokens 'n8n@pve!ops' --roles PVEVMUser
 
 Some reads need more than `PVEAuditor`: *Get Updates* / the *Updates Available* trigger need `Sys.Modify` on `/nodes/<node>`, *Syslog* / *Journal* need `Sys.Syslog`, guest agent commands need `VM.GuestAgent.*` (9.x) or `VM.Monitor` (8.x).
 
-> **Warning:** with an administrative token, an AI agent using this node can shut down nodes, delete VMs, change firewall rules or run commands inside guests. Give agents a read-only token unless writes are really needed.
+> **Warning:** with an administrative token, an AI agent using this node can shut down nodes, delete VMs or backups, change HA or run commands inside guests. Give agents a read-only token unless writes are really needed.
 
 ## Resources and operations
 
@@ -63,30 +63,25 @@ Some reads need more than `PVEAuditor`: *Get Updates* / the *Updates Available* 
 | Container (LXC) | Same as VM where the API provides it (no Reset, Hibernate, Cloud-Init); Move Volume |
 | Guest Agent | Ping, Get Info, Get OS Info, Get Network Interfaces, Get Filesystems, Exec (waits via exec-status), Get Exec Status, File Read, File Write, FS Freeze / Thaw / Status, Shutdown |
 | Storage | Get Many, Get Status, Get Content, Upload (n8n binary), Download From URL (with checksum), Allocate Volume, Delete Volume, Get RRD Data |
-| Backup | Create (vzdump), Restore (VM or container, `force` off by default), Get Many, Delete, Prune (preview by default, deletes only with *Delete Backups*), Backup Jobs (list, get, create, update, delete, run now), Get Not Backed Up Guests |
-| Cluster | Get Status, Get Resources, Get Tasks, Get Log, Get Options, Get Version, Get Backup Info (included volumes of a backup job) |
+| Backup | Create (vzdump), Get Many, Delete, Prune (preview by default, deletes only with *Delete Backups*), Get Not Backed Up Guests |
+| Backup Job | Get, Get Many, Run Now (runs the scheduled job immediately on its online nodes) |
+| Cluster | Get Status, Get Resources, Get Log, Get Options, Get Version |
 | High Availability | Resources (list, get, add, update, remove), Rules (9.x), Groups (8.x), Status, Manager Status |
 | Pool | Get Many, Create, Update, Delete |
 | Replication | Get Many, Get, Create, Update, Delete, Run Now |
-| Firewall | Rules, Aliases, IP Sets (and entries), Options — read and write at cluster, node (rules/options only), VM and container level |
 | Access (read-only) | Get Users, Get Groups, Get Roles, Get Permissions (ACL), Get Effective Permissions, Get API Tokens (never secrets) |
-| Task | Get Status, Get Log, Stop, Wait For Completion |
-| API Read | Any GET endpoint (see below) |
+| Task | Get Many (recent tasks, newest first; filters: node, type e.g. `vzdump`, VMID, user, errors only, running only, time range, limit), Get Last (most recent matching task), Get Status, Get Log, Stop, Wait For Completion |
 | Custom API Call | Any method on a path below `/api2/json` |
 
 Common behaviour:
 
-- Operations that start a Proxmox VE task return the UPID. **Wait For Completion** polls the task (interval ≥ 1 s, timeout ≤ 24 h, enforced also for expressions) and returns `status` and `exitstatus`; a failed task fails the node with the last log lines.
+- Operations that start a Proxmox VE task return the UPID (field `upid`; also available from *Task → Get Many / Get Last*). **Wait For Completion** polls the task (interval ≥ 1 s, timeout ≤ 24 h, enforced also for expressions) and returns `status` and `exitstatus`; a failed task fails the node with the last log lines.
 - Lists are arrays; **Split Into Items** (default on) returns one item per entry.
 - Proxmox errors become `NodeOperationError` with the message and the invalid parameters. `continueOnFail` returns `{ error }` with `pairedItem`.
 - Nodes, VMs, containers and storages can be picked from lists loaded from Proxmox VE or entered by ID.
-- Destructive operations (shutdown/reboot, stop, delete, rollback, restore, firewall, HA, guest exec/file write, custom calls) carry explicit descriptions so AI agents only use them on explicit request.
+- Destructive operations (shutdown/reboot, stop, delete, rollback, prune with deletion, HA, guest exec/file write, task stop, custom calls) carry explicit descriptions so AI agents only use them on explicit request.
 
-## API Read
-
-Read-only access to every GET endpoint of the Proxmox VE API (337 endpoints, generated at build time from the official API schema: paths, parameter names, types and required flags only). Pick an endpoint from the searchable list, fill the `{path}` parameters and optional query parameters; unknown parameters are rejected. Only GET is ever sent. See the [API Viewer](https://pve.proxmox.com/pve-docs/api-viewer/) for documentation of each endpoint.
-
-Regenerate the catalog: `npm run generate:api -- --download`.
+For anything not covered, **Custom API Call** sends any method to a path below `/api2/json`; see the [API Viewer](https://pve.proxmox.com/pve-docs/api-viewer/) for endpoints and parameters.
 
 ## Trigger
 
@@ -119,7 +114,7 @@ Example output (*Task Finished*, result *Error*, type `vzdump`):
 ## Security
 
 - HTTPS only (HTTP only when explicitly enabled), never downgraded; redirects are never followed.
-- 30 s timeout per request (30 min for uploads); responses larger than 32 MiB are aborted; all wait loops are bounded (≤ 24 h).
+- Request timeout 30 s (30 min for uploads): n8n closes the connection when the server sends nothing for that long, before or after the headers. Responses larger than 32 MiB are aborted and the connection is closed. No timers are left pending. All wait loops are bounded (≤ 24 h) and stop when the execution is cancelled.
 - Token secret, password, ticket and CSRF token are only sent in headers or the login body, never in URLs, and are redacted from outputs and errors (also with `continueOnFail`).
 - Custom API Call rejects absolute URLs, path traversal (also encoded) and paths outside `/api2/json`.
 - Uploads are held in memory while being sent.

@@ -6,7 +6,6 @@ import type {
 	INodePropertyOptions,
 } from 'n8n-workflow';
 
-import { API_CATALOG, findEndpoint } from './apiCatalog';
 import { apiPath, validateNodeName } from './security';
 import { ProxmoxClient } from './transport';
 
@@ -82,32 +81,7 @@ export const listSearch = {
 				.map((r) => ({ name: `${String(r.storage)} (${String(r.type ?? '')})`, value: String(r.storage) })),
 		};
 	},
-	async searchApiEndpoints(this: ILoadOptionsFunctions, filter?: string): Promise<INodeListSearchResult> {
-		return {
-			results: API_CATALOG.filter((e) => matches(filter, e.p))
-				.slice(0, MAX_RESULTS)
-				.map((e) => ({ name: `GET ${e.p}`, value: e.p, url: `https://pve.proxmox.com/pve-docs/api-viewer/#${e.p}` })),
-		};
-	},
 };
-
-function endpointParams(ctx: ILoadOptionsFunctions, location: 'path' | 'query'): INodePropertyOptions[] {
-	let template = '';
-	try {
-		template = String(ctx.getCurrentNodeParameter('endpoint', { extractValue: true }) ?? '');
-	} catch {
-		return [];
-	}
-	const endpoint = findEndpoint(template);
-	if (!endpoint) return [];
-	return endpoint.params
-		.filter((p) => (location === 'path' ? p.in === 'path' : p.in !== 'path'))
-		.map((p) => ({
-			name: `${p.n}${p.r ? ' (required)' : ''}`,
-			value: p.n,
-			description: `${p.t}${p.e ? `: ${p.e.join(' | ')}` : ''}`,
-		}));
-}
 
 export const loadOptions = {
 	async getNodeServices(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
@@ -126,11 +100,5 @@ export const loadOptions = {
 			name: `${String(r.id)}${r.comment ? ` - ${String(r.comment)}` : ''}${r.schedule ? ` (${String(r.schedule)})` : ''}`,
 			value: String(r.id),
 		}));
-	},
-	async getApiPathParams(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-		return endpointParams(this, 'path');
-	},
-	async getApiQueryParams(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-		return endpointParams(this, 'query');
 	},
 };

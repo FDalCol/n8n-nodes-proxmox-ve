@@ -10,7 +10,6 @@ import {
 } from '../nodes/ProxmoxVe/shared/security';
 import { isUpid } from '../nodes/ProxmoxVe/shared/transport';
 import { parseUpid } from '../nodes/ProxmoxVe/shared/tasks';
-import catalog from '../nodes/ProxmoxVe/generated/apiCatalog.json';
 
 describe('normalizeBaseUrl', () => {
 	it('accepts https and strips trailing slashes', () => {
@@ -66,16 +65,5 @@ describe('UPID', () => {
 		expect(isUpid(upid)).toBe(true);
 		expect(parseUpid(upid)).toMatchObject({ node: 'pve1', type: 'vzdump', id: '100', user: 'root@pam' });
 		expect(isUpid('UPID:../../:x')).toBe(false);
-	});
-});
-
-describe('generated API catalog', () => {
-	it('contains only GET endpoints, no descriptions, and no websocket endpoints', () => {
-		const list = catalog as Array<{ p: string; params: Array<Record<string, unknown>> }>;
-		expect(list.length).toBeGreaterThan(300);
-		expect(list.some((e) => e.p === '/nodes/{node}/qemu')).toBe(true);
-		expect(list.some((e) => /websocket/.test(e.p))).toBe(false);
-		const keys = new Set(list.flatMap((e) => e.params.flatMap((p) => Object.keys(p))));
-		expect([...keys].sort()).toEqual(['e', 'in', 'n', 'r', 't']);
 	});
 });

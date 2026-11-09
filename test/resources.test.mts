@@ -79,8 +79,8 @@ describe('VM', () => {
 		expect(req.form.get('vmid')).toBe('150');
 		expect(req.form.get('net1')).toBe('virtio,bridge=vmbr1');
 		await expect(
-			runNode({ credentials: creds(), params: { resource: 'vm', operation: 'create', node: 'pve1', newVmid: 151, additionalParameters: { parameter: [{ name: 'evil', value: 'x' }] } } }),
-		).rejects.toThrow(/Unknown parameter "evil"/);
+			runNode({ credentials: creds(), params: { resource: 'vm', operation: 'create', node: 'pve1', newVmid: 151, additionalParameters: { parameter: [{ name: 'bad name&x=1', value: 'x' }] } } }),
+		).rejects.toThrow(/Invalid parameter name/);
 	});
 
 	it('hibernates with todisk and handles snapshots and cloud-init', async () => {
@@ -183,6 +183,72 @@ describe('Wait For Completion', () => {
 	});
 });
 
+describe('Task search', () => {
+	const t = (n: number, extra: Record<string, unknown>) => ({
+		upid: `UPID:pve1:0000000${n}:0000000${n}:6500000${n}:vzdump::root@pam:`,
+		node: 'pve1',
+		type: 'vzdump',
+		id: '',
+		user: 'root@pam',
+		starttime: 1767225600 + n * 100,
+		endtime: 1767225600 + n * 100 + 50,
+		status: 'OK',
+		...extra,
+	});
+	const clusterTasks = [
+		t(1, { id: '100', status: 'OK' }),
+		t(2, { id: '100', status: 'job errors' }),
+		t(3, { type: 'qmstart', id: '200', user: 'n8n@pve!test' }),
+		t(4, { id: '100', endtime: undefined, status: undefined }),
+		t(5, { node: 'pve2', id: '300', status: 'OK' }),
+	];
+
+	beforeAll(() => {
+		server.on('GET', '/cluster/tasks', () => ({ data: clusterTasks }));
+		server.on('GET', '/nodes/{node}/tasks', (_req, p) => ({ data: clusterTasks.filter((x) => x.node === p.node) }));
+	});
+
+	it('Get Many lists cluster tasks newest first with local filters and limit', async () => {
+		const all = await run({ resource: 'task', operation: 'getMany' });
+		expect(all.map((x) => x.starttime)).toEqual([...clusterTasks].map((x) => x.starttime).sort((a, b) => b - a));
+		const backups = await run({ resource: 'task', operation: 'getMany', taskFilters: { type: 'vzdump', vmid: 100 }, limit: 2 });
+		expect(backups.map((x) => x.upid)).toEqual([clusterTasks[3].upid, clusterTasks[1].upid]);
+		const errors = await run({ resource: 'task', operation: 'getMany', taskFilters: { errorsOnly: true } });
+		expect(errors.map((x) => x.status)).toEqual(['job errors']);
+		expect(errors[0]).toMatchObject({ running: false, success: false });
+		const running = await run({ resource: 'task', operation: 'getMany', taskFilters: { runningOnly: true } });
+		expect(running).toHaveLength(1);
+		expect(running[0]).toMatchObject({ running: true, success: null });
+		const byUser = await run({ resource: 'task', operation: 'getMany', taskFilters: { user: 'n8n@pve' } });
+		expect(byUser.map((x) => x.type)).toEqual(['qmstart']);
+		const range = await run({
+			resource: 'task',
+			operation: 'getMany',
+			taskFilters: { since: new Date((1767225600 + 200) * 1000).toISOString(), until: new Date((1767225600 + 300) * 1000).toISOString() },
+		});
+		expect(range.map((x) => x.starttime)).toEqual([1767225600 + 300, 1767225600 + 200]);
+		await expect(runNode({ credentials: creds(), params: { resource: 'task', operation: 'getMany', limit: 5000 } })).rejects.toThrow(/Limit/);
+	});
+
+	it('Get Many with a node uses the node task index with server-side filters', async () => {
+		server.requests.length = 0;
+		const out = await run({ resource: 'task', operation: 'getMany', filterNode: 'pve2', taskFilters: { type: 'vzdump', errorsOnly: false, user: 'root@pam' }, limit: 10 });
+		expect(out.map((x) => x.id)).toEqual(['300']);
+		const req = server.requestsTo('GET', '/nodes/pve2/tasks')[0];
+		expect(req.query.get('typefilter')).toBe('vzdump');
+		expect(req.query.get('userfilter')).toBe('root@pam');
+		expect(req.query.get('source')).toBe('all');
+		expect(req.query.get('limit')).toBe('10');
+	});
+
+	it('Get Last returns the most recent matching task or found=false', async () => {
+		const [last] = await run({ resource: 'task', operation: 'getLast', taskFilters: { type: 'vzdump', errorsOnly: true } });
+		expect(last).toMatchObject({ status: 'job errors', id: '100' });
+		const [none] = await run({ resource: 'task', operation: 'getLast', taskFilters: { type: 'qmigrate' } });
+		expect(none).toEqual({ found: false });
+	});
+});
+
 describe('Container', () => {
 	it('updates config synchronously and has no hibernate', async () => {
 		server.on('PUT', '/nodes/{node}/lxc/{vmid}/config', () => ({ data: null }));
@@ -279,34 +345,25 @@ describe('Backup', () => {
 		expect(server.requests.filter((r) => r.method === 'DELETE')).toHaveLength(1);
 	});
 
-	it('restore sends force=0 by default and maps containers to ostemplate', async () => {
-		server.on('POST', '/nodes/{node}/qemu', () => ({ data: makeUpid('pve1', 'qmrestore', '300') }));
-		server.on('POST', '/nodes/{node}/lxc', () => ({ data: makeUpid('pve1', 'vzrestore', '301') }));
-		await run([
-			{ resource: 'backup', operation: 'restore', node: 'pve1', guestType: 'qemu', targetVmid: 300, archive: 'local:backup/vzdump-qemu-100.vma.zst' },
-			{ resource: 'backup', operation: 'restore', node: 'pve1', guestType: 'lxc', targetVmid: 301, archive: 'local:backup/vzdump-lxc-200.tar.zst' },
-		]);
-		const vm = server.requestsTo('POST', '/nodes/pve1/qemu')[0];
-		expect(vm.form.get('force')).toBe('0');
-		expect(vm.form.get('archive')).toBe('local:backup/vzdump-qemu-100.vma.zst');
-		const ct = server.requestsTo('POST', '/nodes/pve1/lxc')[0];
-		expect(ct.form.get('ostemplate')).toBe('local:backup/vzdump-lxc-200.tar.zst');
-		expect(ct.form.get('restore')).toBe('1');
-	});
-
-	it('runs a backup job now on every online node, without scheduling fields', async () => {
+	it('Backup Job: get many, get and run now on every online node without scheduling fields', async () => {
+		server.on('GET', '/cluster/backup', () => ({ data: [{ id: 'backup-abc', schedule: 'sun 01:00' }] }));
 		server.on('GET', '/cluster/backup/{id}', () => ({
-			data: { id: 'backup-abc', schedule: 'sun 01:00', enabled: 1, storage: 'pbs', vmid: '100,200', mode: 'snapshot', 'prune-backups': { 'keep-last': 3 }, comment: 'weekly' },
+			data: { id: 'backup-abc', schedule: 'sun 01:00', enabled: 1, storage: 'pbs', vmid: '100,200', mode: 'snapshot', 'prune-backups': { 'keep-last': 3 }, comment: 'weekly', 'next-run': 123 },
 		}));
-		server.on('POST', '/nodes/{node}/vzdump', () => ({ data: makeUpid('pve1', 'vzdump') }));
-		const out = await run({ resource: 'backup', operation: 'runJob', jobId: 'backup-abc' });
+		server.on('POST', '/nodes/{node}/vzdump', (_req, p) => ({ data: makeUpid(p.node, 'vzdump') }));
+		const list = await run({ resource: 'backupJob', operation: 'getMany' });
+		expect(list[0].id).toBe('backup-abc');
+		const [job] = await run({ resource: 'backupJob', operation: 'get', jobId: 'backup-abc' });
+		expect(job.storage).toBe('pbs');
+		const out = await run({ resource: 'backupJob', operation: 'runNow', jobId: 'backup-abc' });
 		expect(out).toHaveLength(2);
+		expect(out.map((o) => o.node)).toEqual(['pve1', 'pve2']);
 		const req = server.requestsTo('POST', '/nodes/pve1/vzdump')[0];
 		expect(req.form.get('storage')).toBe('pbs');
 		expect(req.form.get('prune-backups')).toBe('keep-last=3');
-		expect(req.form.get('schedule')).toBeNull();
-		expect(req.form.get('comment')).toBeNull();
+		for (const key of ['schedule', 'comment', 'enabled', 'id', 'next-run']) expect(req.form.get(key)).toBeNull();
 		expect(server.requestsTo('POST', '/nodes/pve2/vzdump')).toHaveLength(1);
+		await expect(runNode({ credentials: creds(), params: { resource: 'backup', operation: 'restore' } })).rejects.toThrow(/Unsupported/);
 	});
 
 	it('lists guests without backup', async () => {
@@ -316,14 +373,12 @@ describe('Backup', () => {
 });
 
 describe('Cluster, HA, Pool, Replication', () => {
-	it('reads version and backup info', async () => {
-		server.on('GET', '/cluster/backup/{id}/included_volumes', () => ({ data: { children: [{ id: 100 }] } }));
-		const out = await run([
-			{ resource: 'cluster', operation: 'getVersion' },
-			{ resource: 'cluster', operation: 'getBackupInfo', jobId: 'backup-abc' },
-		]);
-		expect(out[0].version).toBe('9.2.9');
-		expect(out[1]).toEqual({ jobId: 'backup-abc', children: [{ id: 100 }] });
+	it('reads the version; Get Backup Info and Get Tasks no longer exist', async () => {
+		const [out] = await run({ resource: 'cluster', operation: 'getVersion' });
+		expect(out.version).toBe('9.2.9');
+		for (const operation of ['getBackupInfo', 'getTasks']) {
+			await expect(runNode({ credentials: creds(), params: { resource: 'cluster', operation } })).rejects.toThrow(/Unsupported/);
+		}
 	});
 
 	it('creates HA rules (9.x) and groups (8.x)', async () => {
@@ -358,25 +413,12 @@ describe('Cluster, HA, Pool, Replication', () => {
 	});
 });
 
-describe('Firewall', () => {
-	it('creates rules at every level and refuses aliases at node level', async () => {
-		server.on('POST', '/cluster/firewall/rules', () => ({ data: null }));
-		server.on('POST', '/nodes/{node}/firewall/rules', () => ({ data: null }));
-		server.on('POST', '/nodes/{node}/lxc/{vmid}/firewall/rules', () => ({ data: null }));
-		server.on('PUT', '/nodes/{node}/qemu/{vmid}/firewall/options', () => ({ data: null }));
-		await run([
-			{ resource: 'firewall', operation: 'createRule', scope: 'cluster', ruleType: 'in', action: 'ACCEPT', ruleFields: { proto: 'tcp', dport: '22', enable: true } },
-			{ resource: 'firewall', operation: 'createRule', scope: 'node', node: 'pve1', ruleType: 'in', action: 'DROP' },
-			{ resource: 'firewall', operation: 'createRule', scope: 'container', node: 'pve2', ctid: '200', ruleType: 'out', action: 'REJECT' },
-			{ resource: 'firewall', operation: 'updateOptions', scope: 'vm', node: 'pve1', vmid: '100', firewallOptions: { parameter: [{ name: 'enable', value: '1' }] } },
-		]);
-		expect(server.requestsTo('POST', '/cluster/firewall/rules')[0].form.get('dport')).toBe('22');
-		expect(server.requestsTo('POST', '/nodes/pve2/lxc/200/firewall/rules')).toHaveLength(1);
-		expect(server.requestsTo('PUT', '/nodes/pve1/qemu/100/firewall/options')[0].form.get('enable')).toBe('1');
-		await expect(runNode({ credentials: creds(), params: { resource: 'firewall', operation: 'getAliases', scope: 'node', node: 'pve1' } })).rejects.toThrow(/not available at node level/);
-		await expect(
-			runNode({ credentials: creds(), params: { resource: 'firewall', operation: 'updateOptions', scope: 'cluster', firewallOptions: { parameter: [{ name: 'dhcp', value: '1' }] } } }),
-		).rejects.toThrow(/Unknown parameter "dhcp"/);
+describe('Removed resources', () => {
+	it('Firewall and API Read are no longer available', async () => {
+		for (const resource of ['firewall', 'apiRead']) {
+			await expect(runNode({ credentials: creds(), params: { resource, operation: 'getRules' } })).rejects.toThrow(/Unsupported/);
+		}
+		expect(server.requests).toHaveLength(0);
 	});
 });
 
@@ -398,30 +440,6 @@ describe('Access', () => {
 			{ resource: 'access', operation: 'getAcl' },
 		]);
 		expect(out.map((o) => o.userid ?? o.roleid)).toEqual(['root@pam', 'PVEAuditor', 'PVEAuditor']);
-	});
-});
-
-describe('API Read', () => {
-	it('fills path and query parameters and only sends GET', async () => {
-		server.on('GET', '/nodes/{node}/qemu', (req) => ({ data: [{ vmid: 100, full: req.query.get('full') }] }));
-		const [out] = await run({
-			resource: 'apiRead',
-			operation: 'get',
-			endpoint: { __rl: true, mode: 'list', value: '/nodes/{node}/qemu' },
-			pathParameters: { parameter: [{ name: 'node', value: 'pve1' }] },
-			queryParameters: { parameter: [{ name: 'full', value: 'true' }] },
-		});
-		expect(out).toEqual({ vmid: 100, full: '1' });
-		expect(server.requests.every((r) => r.method === 'GET')).toBe(true);
-	});
-
-	it('rejects unknown endpoints, unknown parameters and traversal in path values', async () => {
-		const call = (p: Params) => runNode({ credentials: creds(), params: { resource: 'apiRead', operation: 'get', ...p } });
-		await expect(call({ endpoint: '/nodes/{node}/qemu/{vmid}/status/start' })).rejects.toThrow(/Unknown endpoint/);
-		await expect(call({ endpoint: '/nodes/{node}/qemu', pathParameters: { parameter: [{ name: 'node', value: 'pve1' }] }, queryParameters: { parameter: [{ name: 'x', value: '1' }] } })).rejects.toThrow(/not a query parameter/);
-		await expect(call({ endpoint: '/nodes/{node}/qemu', pathParameters: { parameter: [{ name: 'node', value: '..' }] } })).rejects.toThrow(/not valid/);
-		await expect(call({ endpoint: '/nodes/{node}/qemu' })).rejects.toThrow(/Missing path parameter/);
-		expect(server.requests).toHaveLength(0);
 	});
 });
 

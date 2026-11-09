@@ -68,6 +68,8 @@ export interface Reply {
 	raw?: string;
 	headers?: Record<string, string>;
 	delayMs?: number;
+	/** Low-level response (e.g. slow streaming); replaces the JSON reply. */
+	stream?: (res: import('node:http').ServerResponse) => void;
 }
 
 export type Handler = (req: RecordedRequest, params: Record<string, string>) => Reply | Promise<Reply>;
@@ -96,6 +98,9 @@ export function makeUpid(node: string, type: string, id = '', user = 'n8n@pve!te
 
 export class FakeProxmox {
 	readonly requests: RecordedRequest[] = [];
+
+	/** Time (ms since epoch) at which the client connection of each request path was closed. */
+	readonly socketClosedAt = new Map<string, number>();
 
 	readonly tasks = new Map<string, FakeTask>();
 
@@ -219,6 +224,7 @@ export class FakeProxmox {
 			form: contentType.includes('application/x-www-form-urlencoded') ? new URLSearchParams(body) : new URLSearchParams(),
 		};
 		this.requests.push(recorded);
+		req.socket.once('close', () => this.socketClosedAt.set(path, Date.now()));
 
 		const send = (reply: Reply) => {
 			const status = reply.status ?? 200;
@@ -248,6 +254,7 @@ export class FakeProxmox {
 			route.names.forEach((n, i) => (params[n] = decodeURIComponent(m[i + 1])));
 			const reply = await route.handler(recorded, params);
 			if (reply.delayMs) await new Promise((r) => setTimeout(r, reply.delayMs));
+			if (reply.stream) return reply.stream(res);
 			return send(reply);
 		}
 		return send({ status: 501, statusMessage: `Method '${recorded.method} ${path}' not implemented` });

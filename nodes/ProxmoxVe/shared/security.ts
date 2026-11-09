@@ -88,7 +88,7 @@ export function hasControlChars(value: string): boolean {
 const SAFE_PATH = /^[A-Za-z0-9\-._~:@!$&'()*+,;=%/]*$/;
 
 /**
- * Validates a user supplied API path (Custom API Call, API Read).
+ * Validates a user supplied API path (Custom API Call).
  * The path is relative to /api2/json. Absolute URLs, traversal (also encoded),
  * query strings, fragments and anything outside the API are rejected.
  * Returns the normalized path starting with "/".
