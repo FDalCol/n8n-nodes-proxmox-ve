@@ -98,6 +98,8 @@ export interface RunOptions {
 	items?: INodeExecutionData[];
 	continueOnFail?: boolean;
 	binary?: Record<string, { data: Buffer; fileName: string; mimeType?: string }>;
+	/** Simulates the execution cancel signal of n8n. */
+	cancelSignal?: AbortSignal;
 }
 
 export function executeContext(opts: RunOptions) {
@@ -108,6 +110,7 @@ export function executeContext(opts: RunOptions) {
 		getNode: () => NODE,
 		getCredentials: async () => opts.credentials,
 		continueOnFail: () => opts.continueOnFail === true,
+		getExecutionCancelSignal: () => opts.cancelSignal,
 		getNodeParameter: (name: string, i: number, fallback?: unknown, options?: { extractValue?: boolean }) =>
 			getParam(paramsFor(i), name, fallback, options),
 		helpers: {

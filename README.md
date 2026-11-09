@@ -8,6 +8,8 @@ n8n community nodes for [Proxmox VE](https://www.proxmox.com/en/proxmox-virtual-
 
 ## Installation
 
+Requires **n8n 2.45.0 or later**.
+
 **Community Nodes (recommended):** in n8n open *Settings → Community Nodes → Install* and enter `n8n-nodes-proxmox-ve`.
 
 **Manual install in Docker:**
@@ -127,7 +129,9 @@ Example output (*Task Finished*, result *Error*, type `vzdump`):
 - **Proxmox VE 9.x**: verified (implemented against the official API schema of September 2026, PVE 9.2).
 - **Proxmox VE 8.4**: support is based on the official API specification (`pve-docs` 8.4.2), not on tests against a live 8.4 cluster.
 
-Differences: HA rules exist only in 9.x (8.x uses HA groups, deprecated in 9.x); options marked *(9.x)* are not available on 8.x; guest agent privileges differ (see above). Requires n8n with Node.js 20+.
+Differences: HA rules exist only in 9.x (8.x uses HA groups, deprecated in 9.x); options marked *(9.x)* are not available on 8.x; guest agent privileges differ (see above).
+
+**Minimum n8n version: 2.45.0** (tests run against `n8n-workflow` 2.45.0, the version shipped with n8n 2.45.0; a test checks that every `n8n-workflow` export used by the node exists in that version).
 
 ## Development
 

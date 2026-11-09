@@ -139,6 +139,22 @@ describe('Wait For Completion', () => {
 		).rejects.toThrow(/Timed out after 1 s/);
 	});
 
+	it('stops waiting when the execution is cancelled', async () => {
+		const upid = server.addTask('pve1', 'qmmigrate', '100', 'OK', 1000);
+		server.on('POST', '/nodes/{node}/qemu/{vmid}/migrate', () => ({ data: upid }));
+		const controller = new AbortController();
+		const started = Date.now();
+		setTimeout(() => controller.abort(), 300);
+		await expect(
+			runNode({
+				credentials: creds(),
+				cancelSignal: controller.signal,
+				params: { resource: 'vm', operation: 'migrate', node: 'pve1', vmid: '100', targetNode: 'pve2', waitForCompletion: true, waitOptions: { pollInterval: 1, timeout: 600 } },
+			}),
+		).rejects.toThrow(/cancelled/);
+		expect(Date.now() - started).toBeLessThan(5000);
+	});
+
 	it('enforces minimum interval and 24 h maximum also from expressions', async () => {
 		const upid = server.addTask('pve1', 'qmreboot', '100');
 		server.on('POST', '/nodes/{node}/qemu/{vmid}/status/reboot', () => ({ data: upid }));

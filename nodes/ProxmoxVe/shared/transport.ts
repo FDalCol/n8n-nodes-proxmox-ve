@@ -1,6 +1,6 @@
 import {
 	NodeOperationError,
-	sleepWithAbort,
+	sleep,
 	type ICredentialDataDecryptedObject,
 	type IDataObject,
 	type IExecuteFunctions,
@@ -293,6 +293,7 @@ export class ProxmoxClient {
 		opts: ProxmoxRequestOptions = {},
 	): Promise<T> {
 		this.assertInternalPath(path);
+		this.throwIfCancelled();
 		if (this.credentials.authentication === 'password') await this.ensureSession();
 		let res = await this.send(method, path, opts);
 		if (
@@ -392,7 +393,7 @@ export class ProxmoxClient {
 
 		const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
 		const maxBytes = opts.maxBytes ?? MAX_RESPONSE_BYTES;
-		const timer = new AbortController();
+		let settled = false;
 		let streamRef: StreamLike | undefined;
 
 		const exchange = async (): Promise<RawResponse> => {
@@ -431,18 +432,36 @@ export class ProxmoxClient {
 			return { statusCode, statusMessage: String(response?.statusMessage ?? ''), text };
 		};
 
-		const deadline = sleepWithAbort(timeoutMs, timer.signal).then(
-			() => {
-				streamRef?.destroy?.();
-				throw this.error(`Request to Proxmox VE timed out after ${Math.round(timeoutMs / 1000)} s`);
-			},
-			() => new Promise<never>(() => undefined),
-		);
+		// Overall deadline. `sleep` exists in every supported n8n-workflow version (sleepWithAbort
+		// does not); once the request has settled the deadline is ignored.
+		const deadline = sleep(timeoutMs).then(() => {
+			if (settled) return new Promise<never>(() => undefined);
+			streamRef?.destroy?.();
+			throw this.error(`Request to Proxmox VE timed out after ${Math.round(timeoutMs / 1000)} s`);
+		});
 		try {
 			return await Promise.race([exchange(), deadline]);
 		} finally {
-			timer.abort();
+			settled = true;
 		}
+	}
+
+	/** True when the user cancelled the execution (n8n versions that expose the signal). */
+	isCancelled(): boolean {
+		const getSignal = (this.ctx as { getExecutionCancelSignal?: () => AbortSignal | undefined })
+			.getExecutionCancelSignal;
+		return typeof getSignal === 'function' && getSignal.call(this.ctx)?.aborted === true;
+	}
+
+	throwIfCancelled(): void {
+		if (this.isCancelled()) throw this.error('Execution was cancelled');
+	}
+
+	/** Waits between polls; stops early when the execution is cancelled. */
+	async pause(ms: number): Promise<void> {
+		this.throwIfCancelled();
+		await sleep(ms);
+		this.throwIfCancelled();
 	}
 
 	private handleResponse<T>(res: RawResponse): T {

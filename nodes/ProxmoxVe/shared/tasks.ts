@@ -1,4 +1,4 @@
-import { NodeOperationError, sleep, type IDataObject, type INode } from 'n8n-workflow';
+import { NodeOperationError, type IDataObject, type INode } from 'n8n-workflow';
 
 import {
 	apiPath,
@@ -113,7 +113,7 @@ export async function waitForTask(
 		}
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) break;
-		await sleep(Math.min(options.intervalSeconds * 1000, remaining));
+		await client.pause(Math.min(options.intervalSeconds * 1000, remaining));
 	}
 	throw client.error(
 		`Timed out after ${options.timeoutSeconds} s waiting for the Proxmox VE task to finish`,

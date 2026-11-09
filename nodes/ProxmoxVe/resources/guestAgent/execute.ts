@@ -1,4 +1,4 @@
-import { sleep, type IDataObject } from 'n8n-workflow';
+import type { IDataObject } from 'n8n-workflow';
 
 import { data, list, type OperationContext, type ResourceHandlers } from '../../shared/engine';
 import { apiPath, hasControlChars, MAX_POLL_ITERATIONS } from '../../shared/security';
@@ -31,7 +31,7 @@ async function waitForExec(ctx: OperationContext, statusPath: string, pid: numbe
 		if (status.exited === true || status.exited === 1) return { pid, ...status, exited: true };
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) break;
-		await sleep(Math.min(options.intervalSeconds * 1000, remaining));
+		await ctx.client.pause(Math.min(options.intervalSeconds * 1000, remaining));
 	}
 	throw ctx.client.error(
 		`Timed out after ${options.timeoutSeconds} s waiting for the guest command to exit`,
