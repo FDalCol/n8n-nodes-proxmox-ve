@@ -1,5 +1,9 @@
 # n8n-nodes-proxmox-ve
 
+[![npm version](https://img.shields.io/npm/v/n8n-nodes-proxmox-ve.svg)](https://www.npmjs.com/package/n8n-nodes-proxmox-ve)
+[![npm downloads](https://img.shields.io/npm/dm/n8n-nodes-proxmox-ve.svg)](https://www.npmjs.com/package/n8n-nodes-proxmox-ve)
+[![license](https://img.shields.io/npm/l/n8n-nodes-proxmox-ve.svg)](./LICENSE)
+
 n8n community nodes for [Proxmox VE](https://www.proxmox.com/en/proxmox-virtual-environment):
 manage nodes, VMs, containers, storage, backups, HA and tasks, and start workflows on
 Proxmox VE events.
@@ -17,8 +21,8 @@ official API specification.
 **Manual (Docker):** replace `n8n` with your container name.
 
 ```bash
-docker cp n8n-nodes-proxmox-ve-0.2.0.tgz n8n:/tmp/
-docker exec -it n8n sh -c "mkdir -p ~/.n8n/nodes && cd ~/.n8n/nodes && npm install --legacy-peer-deps /tmp/n8n-nodes-proxmox-ve-0.2.0.tgz"
+docker cp n8n-nodes-proxmox-ve-0.2.1.tgz n8n:/tmp/
+docker exec -it n8n sh -c "mkdir -p ~/.n8n/nodes && cd ~/.n8n/nodes && npm install --legacy-peer-deps /tmp/n8n-nodes-proxmox-ve-0.2.1.tgz"
 docker restart n8n
 ```
 
